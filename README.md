@@ -15,7 +15,7 @@ Given a Solana token mint, Sentinel Alpha produces:
 - confidence score based on data completeness
 - optional news and social evidence
 - illustrative risk exposure scenarios
-- dynamic monitoring alerts
+- active alerts
 - monitoring triggers
 - final recommendation category: `WATCH`, `HIGH RISK`, `AVOID`, `RESEARCH FURTHER`, or `MONITOR CLOSELY`
 - JSON and Markdown run artifacts
@@ -163,9 +163,10 @@ The final agent returns:
 4. Analyst Observations
 5. Risk Flags
 6. Confidence Score
-7. Monitoring Triggers
-8. Final Recommendation Category
-9. Disclaimer
+7. Active Alerts
+8. Monitoring Triggers
+9. Final Recommendation Category
+10. Disclaimer
 
 Each run writes trace artifacts to `artifacts/runs/`:
 
@@ -189,7 +190,7 @@ Sentinel Alpha generates evidence-backed risk dimensions only when source data e
 - News Risk
 - Sentiment Risk
 
-Alerts are generated from observed source fields, such as liquidity changes, volume changes, route availability, source errors, and news/sentiment gaps.
+Active alerts are reserved for conditions observed in the current evidence packet. Monitoring triggers describe future conditions to watch, such as liquidity drops, volume changes, route unavailability, source errors, and news or sentiment gaps.
 
 ## Hackathon Positioning
 

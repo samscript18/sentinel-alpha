@@ -24,7 +24,7 @@ Sentinel Alpha turns a Solana token address and user context into a structured r
 Researcher Agent -> Analyst Agent -> Risk Manager Agent -> Executor/Recommender Agent
 ```
 
-The final output is not a buy/sell command. It is a decision-support report with source status, evidence summary, risk flags, confidence score, monitoring triggers, illustrative exposure scenarios, alerts, and one conservative category: `WATCH`, `HIGH RISK`, `AVOID`, `RESEARCH FURTHER`, or `MONITOR CLOSELY`.
+The final output is not a buy/sell command. It is a decision-support report with source status, evidence summary, risk flags, confidence score, illustrative exposure scenarios, active alerts, monitoring triggers, and one conservative category: `WATCH`, `HIGH RISK`, `AVOID`, `RESEARCH FURTHER`, or `MONITOR CLOSELY`.
 
 The standalone runner also supports `preflight-only` mode, which lets users test source availability and produce evidence artifacts before paying for a full Swarms run.
 
@@ -63,7 +63,7 @@ Missing keys or failed APIs are reported explicitly. Sentinel Alpha does not fak
 
 ## Traceability
 
-Every run can produce JSON, Markdown, agent-trace, decision-chain, and evidence-report artifacts containing the live source packet, source status rows, data-completeness score, pre-agent confidence category, agent timeline, risk model, alerts, and final decision-support output.
+Every run can produce JSON, Markdown, agent-trace, decision-chain, and evidence-report artifacts containing the live source packet, source status rows, data-completeness score, pre-agent confidence category, agent timeline, risk model, active alerts, monitoring triggers, and final decision-support output.
 
 ## Frenzy Mode / Tokenization Angle
 
@@ -94,6 +94,7 @@ Analyze this Solana token for a 1 to 7 day research view. I am not currently pos
 - Analyst observations
 - Risk flags
 - Confidence score
+- Active alerts
 - Monitoring triggers
 - Final recommendation category
 - Disclaimer

@@ -42,6 +42,7 @@ Each run produces:
 - optional news and social evidence
 - technical indicator status
 - risk model
+- active alerts
 - monitoring triggers
 - final recommendation category: `WATCH`, `HIGH RISK`, `AVOID`, `RESEARCH FURTHER`, or `MONITOR CLOSELY`
 - financial disclaimer
