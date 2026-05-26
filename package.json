@@ -1,0 +1,24 @@
+{
+  "name": "sentinel-alpha-defi-trading-swarm",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Sequential DeFi trading intelligence swarm for Solana market research, analysis, risk controls, and actionable trade planning.",
+  "type": "module",
+  "scripts": {
+    "validate": "node --experimental-strip-types scripts/validate.ts",
+    "preflight": "node --experimental-strip-types scripts/run-swarm.ts --preflight-only",
+    "demo": "node --experimental-strip-types scripts/run-swarm.ts"
+  },
+  "keywords": [
+    "swarms",
+    "defi",
+    "trading",
+    "solana",
+    "agents",
+    "hackathon"
+  ],
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^25.9.1"
+  }
+}
