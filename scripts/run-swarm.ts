@@ -1,11 +1,7 @@
-import { readFile } from "fs/promises";
 import { fail, isLikelySolanaAddress, loadDotEnv } from "./lib/env.ts";
-import { buildSourcePacket, fetchWithTimeout } from "./lib/source-clients.ts";
-import { printFinalReport, printSourceStatus, writeRunArtifacts } from "./lib/report.ts";
-import type { AgentInput, CliArgs, SourcePacket, SwarmsPayload, SwarmsResult } from "./lib/types.ts";
-
-const SWARMS_URL = "https://api.swarms.world/v1/swarm/completions";
-const SWARMS_TIMEOUT_MS = Number(process.env.SWARMS_TIMEOUT_MS ?? 200000);
+import { printFinalReport, printSourceStatus } from "./lib/report.ts";
+import { runSentinelAnalysis } from "./lib/workflow.ts";
+import type { CliArgs } from "./lib/types.ts";
 
 await loadDotEnv();
 
@@ -24,19 +20,29 @@ if (!isLikelySolanaAddress(tokenAddress)) {
   fail([`Invalid Solana token address: ${tokenAddress}`]);
 }
 
-const payload = JSON.parse(await readFile(new URL("../swarm.payload.json", import.meta.url), "utf8")) as SwarmsPayload;
 const startedAt = new Date().toISOString();
 
 console.log(`Sentinel Alpha live-data preflight started at ${startedAt}`);
 console.log(`Token: ${tokenAddress}`);
 
-const sourcePacket = await buildSourcePacket(tokenAddress);
+const preflight = await runSentinelAnalysis({
+  tokenAddress,
+  mode: "preflight",
+  outputDir: args.outputDir,
+  writeArtifacts: false
+});
+const { sourcePacket } = preflight;
 printSourceStatus(sourcePacket);
 
-const agentInput = buildAgentInput(tokenAddress, sourcePacket);
-
 if (args.preflightOnly) {
-  const paths = await writeRunArtifacts({ outputDir: args.outputDir, agentInput, sourcePacket });
+  const result = await runSentinelAnalysis({
+    tokenAddress,
+    mode: "preflight",
+    outputDir: args.outputDir,
+    writeArtifacts: true,
+    sourcePacket
+  });
+  const paths = result.artifacts!;
   console.log("\nPreflight-only mode enabled. No Swarms API call was made.");
   console.log(`Saved JSON evidence: ${paths.jsonPath}`);
   console.log(`Saved Markdown report: ${paths.markdownPath}`);
@@ -47,7 +53,14 @@ if (args.preflightOnly) {
 }
 
 if (!process.env.SWARMS_API_KEY) {
-  const paths = await writeRunArtifacts({ outputDir: args.outputDir, agentInput, sourcePacket });
+  const result = await runSentinelAnalysis({
+    tokenAddress,
+    mode: "preflight",
+    outputDir: args.outputDir,
+    writeArtifacts: true,
+    sourcePacket
+  });
+  const paths = result.artifacts!;
   fail([
     "Live-data preflight completed, but SWARMS_API_KEY is not configured.",
     "Set SWARMS_API_KEY in .env or your shell to run the agent workflow.",
@@ -57,46 +70,27 @@ if (!process.env.SWARMS_API_KEY) {
   ]);
 }
 
-const requestBody = {
-  ...payload,
-  task: `${payload.task}\n\nSTRUCTURED AGENT INPUT:\n${JSON.stringify(agentInput, null, 2)}`
-};
-
-let response: Response;
+let analysis;
 try {
-  response = await fetchWithTimeout(
-    SWARMS_URL,
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-api-key": process.env.SWARMS_API_KEY
-      },
-      body: JSON.stringify(requestBody)
-    },
-    SWARMS_TIMEOUT_MS
-  );
+  analysis = await runSentinelAnalysis({
+    tokenAddress,
+    mode: "swarms",
+    outputDir: args.outputDir,
+    writeArtifacts: true,
+    swarmsApiKey: process.env.SWARMS_API_KEY,
+    sourcePacket
+  });
 } catch (error) {
-  const paths = await writeRunArtifacts({ outputDir: args.outputDir, agentInput, sourcePacket });
   const message = error instanceof Error ? error.message : String(error);
   fail([
-    `Swarms API request failed before a response was returned: ${message}`,
-    `Timeout used: ${SWARMS_TIMEOUT_MS}ms. You can raise it with SWARMS_TIMEOUT_MS=200000.`,
-    `Saved JSON evidence: ${paths.jsonPath}`,
-    `Saved Markdown report: ${paths.markdownPath}`
+    `Swarms workflow failed: ${message}`,
+    "You can raise the timeout with SWARMS_TIMEOUT_MS=200000."
   ]);
 }
 
-const text = await response.text();
+printFinalReport(analysis.swarmsResult ?? {}, analysis.sourcePacket);
 
-if (!response.ok) {
-  fail([`Swarms API error ${response.status}:`, text]);
-}
-
-const result = parseJsonOrText(text);
-printFinalReport(result, sourcePacket);
-
-const paths = await writeRunArtifacts({ outputDir: args.outputDir, agentInput, sourcePacket, result });
+const paths = analysis.artifacts!;
 console.log("\nArtifacts");
 console.log(`Saved JSON run: ${paths.jsonPath}`);
 console.log(`Saved Markdown report: ${paths.markdownPath}`);
@@ -130,65 +124,4 @@ function parseArgs(argv: string[]): CliArgs {
   }
 
   return parsed;
-}
-
-function buildAgentInput(tokenAddress: string, sourcePacket: SourcePacket): AgentInput {
-  const pairs = sourcePacket.evidence.dexScreener?.pairs ?? [];
-  const primaryPair = pairs[0] ?? null;
-  const heliusAsset = sourcePacket.evidence.helius as any;
-
-  return {
-    timestamp: new Date().toISOString(),
-    tokenAddress,
-    tokenMetadata: {
-      dexScreenerBaseToken: primaryPair?.baseToken ?? null,
-      heliusAssetMetadata: heliusAsset?.contentMetadata ?? heliusAsset ?? null
-    },
-    dexScreener: {
-      price: primaryPair?.priceUsd ?? null,
-      liquidity: primaryPair?.liquidityUsd ?? null,
-      volume: primaryPair?.volume ?? null,
-      pairCount: pairs.length,
-      priceChange: primaryPair?.priceChange ?? null,
-      pairs
-    },
-    jupiter: {
-      routeAvailable: sourcePacket.status.some((entry) => entry.source === "Jupiter" && entry.status === "available"),
-      quoteInfo: sourcePacket.evidence.jupiter
-    },
-    helius: {
-      assetMetadata: sourcePacket.evidence.helius
-    },
-    birdeye: {
-      tokenOverview: sourcePacket.evidence.birdeye
-    },
-    news: sourcePacket.evidence.news,
-    sentiment: sourcePacket.evidence.sentiment,
-    technicalAnalysis: sourcePacket.evidence.technicalIndicators,
-    riskModel: sourcePacket.evidence.riskModel,
-    dataCompleteness: sourcePacket.completeness,
-    dataSourceStatus: sourcePacket.status,
-    requiredOutput: {
-      finalRecommendationCategories: ["WATCH", "HIGH RISK", "AVOID", "RESEARCH FURTHER", "MONITOR CLOSELY"],
-      include: [
-        "agent execution timeline",
-        "research evidence summary with Evidence: lines",
-        "analyst observations with Evidence: lines",
-        "risk flags with Evidence: lines",
-        "data source status",
-        "confidence score based on data completeness",
-        "illustrative position scenarios",
-        "monitoring triggers",
-        "financial disclaimer"
-      ]
-    }
-  };
-}
-
-function parseJsonOrText(text: string): SwarmsResult {
-  try {
-    return JSON.parse(text) as SwarmsResult;
-  } catch {
-    return { raw: text };
-  }
 }

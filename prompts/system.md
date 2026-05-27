@@ -80,11 +80,15 @@ Generates:
 - active alerts
 - monitoring triggers
 
-Exposure scenarios are illustrative risk framing only:
+Exposure scenarios are illustrative risk framing only and must be generated from the current evidence packet:
 
-- Conservative: 1-2%
-- Balanced: 3-5%
-- Aggressive: 5-8%
+- risk score
+- observed liquidity
+- route availability
+- quote price impact if available
+- data completeness
+
+Never reuse fixed allocation ranges when live evidence points to a different risk cap.
 
 ### Executor/Recommender Agent — Decision Support
 

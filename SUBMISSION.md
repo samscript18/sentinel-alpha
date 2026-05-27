@@ -2,6 +2,8 @@
 
 Sentinel Alpha is an evidence-first Solana DeFi trading research swarm.
 
+It ships with a working CLI and a responsive Next.js dashboard for judges and marketplace buyers.
+
 It coordinates four specialized agents:
 
 1. Researcher Agent — collects and labels live token, market, route, and optional on-chain intelligence.
@@ -24,7 +26,7 @@ Solana traders often rely on fragmented dashboards, social feeds, and incomplete
 - Optional CryptoPanic
 - Optional GNews
 - Optional NewsAPI
-- Optional Reddit public search
+- Optional Reddit OAuth search
 - Optional LunarCrush
 
 DexScreener and Jupiter work without project-specific API keys. Helius and Birdeye are optional premium data layers; if their keys are missing, Sentinel Alpha reports `not_configured` instead of inventing data.
@@ -48,6 +50,25 @@ Each run produces:
 - financial disclaimer
 - JSON, Markdown, agent trace, decision-chain, and evidence-report artifacts under `artifacts/runs/`
 
+## Dashboard
+
+The dashboard visualizes the same workflow used by the CLI:
+
+- responsive desktop, tablet, and mobile layouts
+- full demo workflow execution through `/api/analyze`
+- token identity for the submitted mint
+- source status
+- agent execution timeline
+- market evidence cards
+- news and sentiment availability
+- risk model
+- recommendation category
+- active alerts
+- monitoring triggers
+- artifact downloads
+
+The dashboard `Run Analysis` button calls the full Swarms-backed demo workflow and requires `SWARMS_API_KEY`. Preflight-only mode remains available from the CLI.
+
 ## Hackathon Fit
 
 Sentinel Alpha fits Agent Capital Markets because it packages market intelligence as a reusable, tokenizable agent workflow for Swarms Marketplace. It is not a generic prompt wrapper: it performs live-data preflight, preserves source traceability, and routes structured evidence through a real multi-agent workflow.
@@ -63,7 +84,9 @@ The runtime does not inject prewritten market briefs. Each report is generated f
 ```bash
 npm install
 cp .env.example .env
+# add SWARMS_API_KEY to .env for dashboard/demo runs
 npm run validate
+npm run dev
 npm run preflight -- So11111111111111111111111111111111111111112
 npm run demo -- So11111111111111111111111111111111111111112
 ```

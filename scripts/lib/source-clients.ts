@@ -1,3 +1,4 @@
+import axios, { type AxiosRequestConfig } from "axios";
 import type {
   DataCompleteness,
   DexScreenerPair,
@@ -7,6 +8,7 @@ import type {
   SourceName,
   SourcePacket,
   SourceResult,
+  SourceStatus,
   TechnicalIndicators,
   RiskModel,
   SentimentEvidence
@@ -70,7 +72,7 @@ export async function buildSourcePacket(tokenAddress: string): Promise<SourcePac
     riskModel
   };
 
-  const completeness = scoreCompleteness(allResults);
+  const completeness = scoreCompleteness(allResults, riskModel);
 
   return { status, evidence, completeness };
 }
@@ -131,7 +133,7 @@ async function fetchJupiterRoute(tokenAddress: string): Promise<SourceResult<Jup
   try {
     const response = await fetchJson(`https://lite-api.jup.ag/swap/v1/quote?${params}`, {}, 20000);
     if (response?.error) {
-      return unavailable(source, String(response.error), null);
+      return unavailable<JupiterRouteEvidence>(source, String(response.error), null);
     }
 
     return available(source, "Route/quote availability checked.", {
@@ -283,6 +285,10 @@ async function fetchNewsApi(queryTerms: string[]): Promise<SourceResult<NewsEvid
 
 async function fetchRedditSentiment(queryTerms: string[]): Promise<SourceResult<SentimentEvidence>> {
   const source = "Reddit";
+  if (!process.env.REDDIT_CLIENT_ID || !process.env.REDDIT_CLIENT_SECRET) {
+    return notConfigured(source, "REDDIT_CLIENT_ID and REDDIT_CLIENT_SECRET not configured.");
+  }
+
   const params = new URLSearchParams({
     q: queryTerms.slice(0, 3).join(" "),
     sort: "new",
@@ -291,8 +297,12 @@ async function fetchRedditSentiment(queryTerms: string[]): Promise<SourceResult<
   });
 
   try {
-    const response = await fetchJson(`https://www.reddit.com/search.json?${params}`, {
-      headers: { "User-Agent": "sentinel-alpha-hackathon/1.0" }
+    const accessToken = await fetchRedditAccessToken();
+    const response = await fetchJson(`https://oauth.reddit.com/search?${params}`, {
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "User-Agent": "sentinel-alpha-hackathon/1.0"
+      }
     }, 20000);
     const posts = Array.isArray(response?.data?.children) ? response.data.children : [];
     const engagementVelocity = posts.reduce((sum: number, item: any) => sum + Number(item?.data?.score ?? 0), 0);
@@ -309,8 +319,46 @@ async function fetchRedditSentiment(queryTerms: string[]): Promise<SourceResult<
       notes: ["Reddit public search provides mention and engagement counts only; sentiment polarity is insufficient evidence."]
     });
   } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (message.includes("HTTP 401") || message.includes("HTTP 403")) {
+      return unavailable(source, "Reddit OAuth request was rejected; check REDDIT_CLIENT_ID and REDDIT_CLIENT_SECRET.", {
+        score: null,
+        confidence: "none",
+        socialVelocity: null,
+        positiveSignalCount: null,
+        negativeSignalCount: null,
+        engagementVelocity: null,
+        communityGrowth: null,
+        socialDominance: null,
+        fearGreed: null,
+        notes: ["insufficient evidence"]
+      });
+    }
     return errored(source, error);
   }
+}
+
+async function fetchRedditAccessToken(): Promise<string> {
+  const credentials = Buffer.from(`${process.env.REDDIT_CLIENT_ID}:${process.env.REDDIT_CLIENT_SECRET}`).toString("base64");
+  const response = await fetchJson(
+    "https://www.reddit.com/api/v1/access_token",
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Basic ${credentials}`,
+        "Content-Type": "application/x-www-form-urlencoded",
+        "User-Agent": "sentinel-alpha-hackathon/1.0"
+      },
+      body: new URLSearchParams({ grant_type: "client_credentials" }).toString()
+    },
+    20000
+  );
+
+  if (typeof response?.access_token !== "string") {
+    throw new Error("Reddit OAuth response did not include access_token.");
+  }
+
+  return response.access_token;
 }
 
 async function fetchLunarCrush(queryTerms: string[]): Promise<SourceResult<SentimentEvidence>> {
@@ -319,8 +367,9 @@ async function fetchLunarCrush(queryTerms: string[]): Promise<SourceResult<Senti
     return notConfigured(source, "LUNARCRUSH_API_KEY not configured.");
   }
 
-  try {
-    return unavailable(source, "LunarCrush API key configured, but no project endpoint is wired for this submission.", {
+  const symbol = queryTerms.find((term) => /^[A-Za-z0-9]{2,12}$/.test(term)) ?? null;
+  if (!symbol) {
+    return unavailable(source, "No token symbol available for LunarCrush coin lookup.", {
       score: null,
       confidence: "none",
       socialVelocity: null,
@@ -332,9 +381,97 @@ async function fetchLunarCrush(queryTerms: string[]): Promise<SourceResult<Senti
       fearGreed: null,
       notes: ["insufficient evidence"]
     });
+  }
+
+  try {
+    const response = await fetchJson(
+      `https://lunarcrush.com/api4/public/coins/${encodeURIComponent(symbol.toLowerCase())}/v1`,
+      {
+        headers: {
+          Authorization: `Bearer ${process.env.LUNARCRUSH_API_KEY}`,
+          accept: "application/json"
+        }
+      },
+      20000
+    );
+    const metrics = normalizeLunarCrushCoinResponse(response);
+
+    if (!metrics) {
+      return unavailable(source, `No LunarCrush coin metrics found for symbol ${symbol}.`, {
+        score: null,
+        confidence: "none",
+        socialVelocity: null,
+        positiveSignalCount: null,
+        negativeSignalCount: null,
+        engagementVelocity: null,
+        communityGrowth: null,
+        socialDominance: null,
+        fearGreed: null,
+        notes: ["insufficient evidence"]
+      });
+    }
+
+    return available(source, `Retrieved LunarCrush social metrics for ${symbol}.`, metrics);
   } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (message.includes("HTTP 402")) {
+      return unavailable(source, "LunarCrush API key is configured, but the active plan does not allow this endpoint.", {
+        score: null,
+        confidence: "none",
+        socialVelocity: null,
+        positiveSignalCount: null,
+        negativeSignalCount: null,
+        engagementVelocity: null,
+        communityGrowth: null,
+        socialDominance: null,
+        fearGreed: null,
+        notes: ["insufficient evidence"]
+      });
+    }
     return errored(source, error);
   }
+}
+
+function normalizeLunarCrushCoinResponse(response: unknown): SentimentEvidence | null {
+  const payload: any = response;
+  const data = Array.isArray(payload?.data) ? payload.data[0] : payload?.data ?? payload;
+  if (!data || typeof data !== "object") return null;
+
+  const sentiment = parseNullableNumber(data.sentiment);
+  const socialVelocity = parseNullableNumber(data.posts_active ?? data.posts_created ?? data.social_mentions);
+  const interactions = parseNullableNumber(data.interactions ?? data.social_interactions);
+  const contributors = parseNullableNumber(data.contributors_active ?? data.social_contributors);
+  const socialDominance = parseNullableNumber(data.social_dominance);
+  const galaxyScore = parseNullableNumber(data.galaxy_score);
+  const altRank = parseNullableNumber(data.alt_rank);
+
+  if (
+    sentiment === null &&
+    socialVelocity === null &&
+    interactions === null &&
+    contributors === null &&
+    socialDominance === null &&
+    galaxyScore === null &&
+    altRank === null
+  ) {
+    return null;
+  }
+
+  return {
+    score: sentiment,
+    confidence: sentiment !== null || socialVelocity !== null || interactions !== null ? "medium" : "low",
+    socialVelocity,
+    positiveSignalCount: null,
+    negativeSignalCount: null,
+    engagementVelocity: interactions,
+    communityGrowth: contributors,
+    socialDominance,
+    fearGreed: galaxyScore,
+    notes: [
+      `LunarCrush galaxy_score=${galaxyScore ?? "insufficient evidence"}`,
+      `LunarCrush alt_rank=${altRank ?? "insufficient evidence"}`
+    ]
+  };
 }
 
 async function fetchHeliusAsset(tokenAddress: string): Promise<SourceResult> {
@@ -412,24 +549,31 @@ async function fetchBirdeyeOverview(tokenAddress: string): Promise<SourceResult>
   }
 }
 
-function scoreCompleteness(results: SourceResult[]): DataCompleteness {
+function scoreCompleteness(results: SourceResult[], riskModel: RiskModel): DataCompleteness {
   const availableSources = results.filter((entry) => entry.status === "available").length;
   const dexAvailable = results.some((entry) => entry.source === "DexScreener" && entry.status === "available");
   const jupiterAvailable = results.some((entry) => entry.source === "Jupiter" && entry.status === "available");
+  const configuredSources = results.filter((entry) => entry.status !== "not_configured").length;
+  const erroredSources = results.filter((entry) => entry.status === "error").length;
   const score = Number((availableSources / results.length).toFixed(2));
   const confidenceScore = Math.round(
-    Math.min(95, score * 70 + (dexAvailable ? 10 : 0) + (jupiterAvailable ? 10 : 0))
+    Math.max(
+      0,
+      Math.min(95, score * 62 + (dexAvailable ? 12 : 0) + (jupiterAvailable ? 12 : 0) - erroredSources * 4 - riskModel.riskScore * 0.08)
+    )
   );
 
   let recommendationCategory: DataCompleteness["recommendationCategory"] = "Research Further";
-  if (confidenceScore < 60 || score < 0.6) {
-    recommendationCategory = "Monitor Closely";
-  } else if (!dexAvailable && !jupiterAvailable) {
+  if (!dexAvailable && !jupiterAvailable) {
     recommendationCategory = "Avoid";
-  } else if (score < 0.75) {
+  } else if (riskModel.riskScore >= 80) {
+    recommendationCategory = "High Risk";
+  } else if (confidenceScore < 60 || score < 0.6) {
+    recommendationCategory = "Monitor Closely";
+  } else if (riskModel.riskScore >= 55 || score < 0.75) {
     recommendationCategory = "Watch";
   } else {
-    recommendationCategory = "Monitor Closely";
+    recommendationCategory = "Research Further";
   }
 
   return {
@@ -438,31 +582,44 @@ function scoreCompleteness(results: SourceResult[]): DataCompleteness {
     score,
     label: score >= 0.75 ? "strong" : score >= 0.5 ? "partial" : "thin",
     confidenceScore,
-    confidenceRationale:
-      "Confidence is based on source availability only, not expected price direction or trade profitability.",
+    confidenceRationale: `Confidence uses live source availability (${availableSources}/${results.length}), configured source coverage (${configuredSources}/${results.length}), critical DexScreener/Jupiter availability, source errors (${erroredSources}), and riskScore=${riskModel.riskScore}. It is not a price-direction score.`,
     recommendationCategory
   };
 }
 
 async function fetchJson(url: string, options: RequestInit = {}, timeoutMs = 20000): Promise<any> {
-  const response = await fetchWithTimeout(url, options, timeoutMs);
-  const text = await response.text();
+  const response = await axios.request({
+    ...toAxiosConfig(options),
+    url,
+    method: (options.method ?? "GET") as AxiosRequestConfig["method"],
+    timeout: timeoutMs,
+    responseType: "json",
+    validateStatus: () => true
+  });
 
   if (response.status === 429) {
     throw new Error(`Rate limited by ${new URL(url).hostname}`);
   }
 
-  if (!response.ok) {
-    throw new Error(`HTTP ${response.status}: ${text.slice(0, 500)}`);
+  if (response.status < 200 || response.status >= 300) {
+    const body = typeof response.data === "string" ? response.data : JSON.stringify(response.data);
+    throw new Error(`HTTP ${response.status}: ${body.slice(0, 500)}`);
   }
 
-  return JSON.parse(text);
+  return response.data;
 }
 
 async function fetchText(url: string, options: RequestInit = {}, timeoutMs = 20000): Promise<string> {
-  const response = await fetchWithTimeout(url, options, timeoutMs);
-  const text = await response.text();
-  if (!response.ok) {
+  const response = await axios.request({
+    ...toAxiosConfig(options),
+    url,
+    method: (options.method ?? "GET") as AxiosRequestConfig["method"],
+    timeout: timeoutMs,
+    responseType: "text",
+    validateStatus: () => true
+  });
+  const text = typeof response.data === "string" ? response.data : JSON.stringify(response.data);
+  if (response.status < 200 || response.status >= 300) {
     throw new Error(`HTTP ${response.status}: ${text.slice(0, 500)}`);
   }
   return text;
@@ -483,15 +640,21 @@ function available<T>(source: SourceName, message: string, data: T): SourceResul
   return { source, status: "available", message, data };
 }
 
+function toAxiosConfig(options: RequestInit): AxiosRequestConfig {
+  const headers = options.headers ? Object.fromEntries(new Headers(options.headers).entries()) : undefined;
+  const data = typeof options.body === "string" ? options.body : undefined;
+  return { headers, data };
+}
+
 function unavailable<T>(source: SourceName, message: string, data: T | null): SourceResult<T> {
   return { source, status: "unavailable", message, data };
 }
 
-function notConfigured(source: SourceName, message: string): SourceResult {
+function notConfigured<T = unknown>(source: SourceName, message: string): SourceResult<T> {
   return { source, status: "not_configured", message, data: null };
 }
 
-function errored(source: SourceName, error: unknown): SourceResult {
+function errored<T = unknown>(source: SourceName, error: unknown): SourceResult<T> {
   const message = error instanceof Error ? error.message : String(error);
   return { source, status: "error", message, data: null };
 }
@@ -648,14 +811,23 @@ function buildRiskModel(params: {
 }): RiskModel {
   const primaryPair = params.dexScreener.data?.pairs?.[0];
   const dimensions: RiskModel["dimensions"] = [];
+  const liquidityUsd = primaryPair?.liquidityUsd ?? null;
+  const volume24h = numericField(primaryPair?.volume, "h24");
+  const txns24h = sumTxnField(primaryPair?.txns, "h24");
+  const maxPriceChange = maxAbsNumericObjectValue(primaryPair?.priceChange);
+  const priceImpactPct = parseNullableNumber(params.jupiter.data?.priceImpactPct);
+  const pairCount = params.dexScreener.data?.pairs.length ?? 0;
+  const liquidityTier = classifyLiquidity(liquidityUsd);
+  const volatilityTier = classifyVolatility(maxPriceChange);
+  const routeTier = classifyRoute(params.jupiter.status, priceImpactPct);
+  const sourceTier = classifySourceCoverage(params.helius.status, params.birdeye.status, params.sentiment.confidence);
 
-  if (primaryPair?.liquidityUsd !== null && primaryPair?.liquidityUsd !== undefined) {
+  if (liquidityUsd !== null) {
     dimensions.push({
       name: "Liquidity Risk",
       status: "observed",
-      evidence: `DexScreener liquidityUsd=${primaryPair.liquidityUsd}`,
-      interpretation:
-        "Current observed liquidity reduces immediate liquidity concerns, but should be monitored for drawdowns and venue fragmentation."
+      evidence: `DexScreener liquidityUsd=${liquidityUsd}; pairCount=${pairCount}`,
+      interpretation: liquidityTier.interpretation
     });
   } else {
     dimensions.push({
@@ -669,26 +841,23 @@ function buildRiskModel(params: {
   dimensions.push({
     name: "Route Risk",
     status: "observed",
-    evidence: `Jupiter status=${params.jupiter.status}`,
-    interpretation:
-      params.jupiter.status === "available"
-        ? "Route is currently available in the observed quote check; monitor for route failures."
-        : "Route availability is not confirmed."
+    evidence: `Jupiter status=${params.jupiter.status}; priceImpactPct=${params.jupiter.data?.priceImpactPct ?? "insufficient evidence"}`,
+    interpretation: routeTier.interpretation
   });
 
   dimensions.push({
     name: "Data Completeness Risk",
     status: "observed",
-    evidence: `Helius=${params.helius.status}; Birdeye=${params.birdeye.status}`,
-    interpretation: "Coverage depends on configured premium sources; missing providers limit confidence."
+    evidence: `Helius=${params.helius.status}; Birdeye=${params.birdeye.status}; sentimentConfidence=${params.sentiment.confidence}`,
+    interpretation: sourceTier.interpretation
   });
 
-  if (primaryPair?.priceChange) {
+  if (primaryPair?.priceChange && maxPriceChange !== null) {
     dimensions.push({
       name: "Volatility Proxy Risk",
       status: "observed",
       evidence: `DexScreener priceChange=${JSON.stringify(primaryPair.priceChange)}`,
-      interpretation: "Price-change fields are a volatility proxy, not a full technical volatility model."
+      interpretation: volatilityTier.interpretation
     });
   } else {
     dimensions.push({
@@ -699,47 +868,313 @@ function buildRiskModel(params: {
     });
   }
 
-  const insufficient = dimensions.filter((item) => item.status === "insufficient evidence").length;
-  const unavailableRoute = params.jupiter.status !== "available" ? 1 : 0;
-  const missingPremium = [params.helius, params.birdeye].filter((item) => item.status !== "available").length;
-  const riskScore = Math.min(100, insufficient * 25 + unavailableRoute * 25 + missingPremium * 10 + 10);
+  if (volume24h !== null || txns24h !== null) {
+    dimensions.push({
+      name: "Activity Risk",
+      status: "observed",
+      evidence: `DexScreener volume.h24=${volume24h ?? "insufficient evidence"}; txns.h24=${txns24h ?? "insufficient evidence"}`,
+      interpretation: activityInterpretation(volume24h, txns24h)
+    });
+  }
+
+  const insufficientPenalty = dimensions.filter((item) => item.status === "insufficient evidence").length * 12;
+  const riskScore = Math.min(
+    100,
+    Math.round(
+      liquidityTier.riskPoints +
+        volatilityTier.riskPoints +
+        routeTier.riskPoints +
+        sourceTier.riskPoints +
+        activityRiskPoints(volume24h, txns24h) +
+        insufficientPenalty
+    )
+  );
+  const exposureScenarios = buildExposureScenarios(riskScore, liquidityUsd, priceImpactPct);
+  const triggers = buildMonitoringTriggers({
+    liquidityUsd,
+    volume24h,
+    maxPriceChange,
+    jupiterStatus: params.jupiter.status,
+    sentimentConfidence: params.sentiment.confidence,
+    priceImpactPct
+  });
+  const activeAlerts = buildActiveAlerts({ routeTier, liquidityTier, volatilityTier, sourceTier, priceImpactPct });
 
   return {
     riskScore,
     confidence: Math.max(0, 100 - riskScore),
     dimensions,
-    illustrativePositionScenarios: {
-      conservative: "1-2% illustrative exposure scenario",
-      balanced: "3-5% illustrative exposure scenario",
-      aggressive: "5-8% illustrative exposure scenario",
-      disclaimer: "Illustrative portfolio exposure scenarios only; not financial advice."
-    },
-    activeAlerts: [],
-    monitoringTriggers: [
-      {
-        title: "Liquidity Drawdown Alert",
-        trigger: "liquidity drops by at least 20% from current observed source field",
-        severityIfTriggered: "medium",
-        evidence: primaryPair?.liquidityUsd ? `DexScreener liquidityUsd=${primaryPair.liquidityUsd}` : "insufficient evidence"
-      },
-      {
-        title: "Volume Change Alert",
-        trigger: "volume changes by at least 25% from current observed source field",
-        severityIfTriggered: "medium",
-        evidence: primaryPair?.volume ? `DexScreener volume=${JSON.stringify(primaryPair.volume)}` : "insufficient evidence"
-      },
-      {
-        title: "Route Unavailable Alert",
-        trigger: "Jupiter route status becomes unavailable or errors",
-        severityIfTriggered: "high",
-        evidence: `Jupiter status=${params.jupiter.status}`
-      },
-      {
-        title: "News Or Sentiment Gap Alert",
-        trigger: "news or sentiment providers remain not configured or return errors",
-        severityIfTriggered: "medium",
-        evidence: params.sentiment.confidence === "none" ? "insufficient evidence" : `sentimentConfidence=${params.sentiment.confidence}`
-      }
-    ]
+    illustrativePositionScenarios: exposureScenarios,
+    activeAlerts,
+    monitoringTriggers: triggers
   };
+}
+
+function classifyLiquidity(liquidityUsd: number | null): { riskPoints: number; interpretation: string; severity: RiskModel["activeAlerts"][number]["severity"] } {
+  if (liquidityUsd === null) {
+    return { riskPoints: 28, severity: "high", interpretation: "insufficient evidence" };
+  }
+  if (liquidityUsd < 50_000) {
+    return {
+      riskPoints: 34,
+      severity: "high",
+      interpretation: `Observed liquidity is very thin at ${formatUsdCompact(liquidityUsd)}; execution and slippage concerns are elevated.`
+    };
+  }
+  if (liquidityUsd < 250_000) {
+    return {
+      riskPoints: 24,
+      severity: "medium",
+      interpretation: `Observed liquidity is shallow at ${formatUsdCompact(liquidityUsd)}; position sizing should be constrained by available depth.`
+    };
+  }
+  if (liquidityUsd < 1_000_000) {
+    return {
+      riskPoints: 14,
+      severity: "medium",
+      interpretation: `Observed liquidity is moderate at ${formatUsdCompact(liquidityUsd)}; monitor for drawdowns and fragmented liquidity.`
+    };
+  }
+  return {
+    riskPoints: 6,
+    severity: "low",
+    interpretation: `Observed liquidity is deeper at ${formatUsdCompact(liquidityUsd)}; this lowers immediate liquidity concern but does not remove market or venue risk.`
+  };
+}
+
+function classifyVolatility(maxPriceChange: number | null): { riskPoints: number; interpretation: string; severity: RiskModel["activeAlerts"][number]["severity"] } {
+  if (maxPriceChange === null) {
+    return { riskPoints: 18, severity: "medium", interpretation: "insufficient evidence" };
+  }
+  if (maxPriceChange >= 25) {
+    return {
+      riskPoints: 30,
+      severity: "high",
+      interpretation: `DexScreener price-change fields show a maximum absolute move of ${maxPriceChange}%, indicating elevated short-window volatility.`
+    };
+  }
+  if (maxPriceChange >= 10) {
+    return {
+      riskPoints: 18,
+      severity: "medium",
+      interpretation: `DexScreener price-change fields show a maximum absolute move of ${maxPriceChange}%, indicating moderate volatility.`
+    };
+  }
+  return {
+    riskPoints: 7,
+    severity: "low",
+    interpretation: `DexScreener price-change fields show a maximum absolute move of ${maxPriceChange}%, indicating lower observed short-window volatility.`
+  };
+}
+
+function classifyRoute(status: SourceStatus, priceImpactPct: number | null): { riskPoints: number; interpretation: string; severity: RiskModel["activeAlerts"][number]["severity"] } {
+  if (status !== "available") {
+    return {
+      riskPoints: 30,
+      severity: "high",
+      interpretation: `Jupiter route status is ${status}; route availability is not confirmed.`
+    };
+  }
+  if (priceImpactPct !== null && priceImpactPct > 1) {
+    return {
+      riskPoints: 22,
+      severity: "high",
+      interpretation: `Jupiter route is available, but quote priceImpactPct=${priceImpactPct}; execution quality should be monitored.`
+    };
+  }
+  if (priceImpactPct !== null && priceImpactPct > 0.3) {
+    return {
+      riskPoints: 12,
+      severity: "medium",
+      interpretation: `Jupiter route is available with priceImpactPct=${priceImpactPct}; execution risk is observable but not absent.`
+    };
+  }
+  return {
+    riskPoints: 5,
+    severity: "low",
+    interpretation: `Jupiter route is available${priceImpactPct !== null ? ` with priceImpactPct=${priceImpactPct}` : ""}.`
+  };
+}
+
+function classifySourceCoverage(
+  heliusStatus: SourceStatus,
+  birdeyeStatus: SourceStatus,
+  sentimentConfidence: SentimentEvidence["confidence"]
+): { riskPoints: number; interpretation: string; severity: RiskModel["activeAlerts"][number]["severity"] } {
+  const missing = [heliusStatus, birdeyeStatus].filter((status) => status !== "available").length;
+  const sentimentMissing = sentimentConfidence === "none" ? 1 : 0;
+  const riskPoints = missing * 7 + sentimentMissing * 8;
+  return {
+    riskPoints,
+    severity: riskPoints >= 18 ? "high" : riskPoints >= 8 ? "medium" : "low",
+    interpretation: `Coverage is based on Helius=${heliusStatus}, Birdeye=${birdeyeStatus}, sentimentConfidence=${sentimentConfidence}. Missing configured sources reduce research confidence.`
+  };
+}
+
+function buildExposureScenarios(
+  riskScore: number,
+  liquidityUsd: number | null,
+  priceImpactPct: number | null
+): RiskModel["illustrativePositionScenarios"] {
+  const liquidityCap = liquidityUsd === null ? 0.5 : liquidityUsd < 50_000 ? 0.5 : liquidityUsd < 250_000 ? 1 : liquidityUsd < 1_000_000 ? 2 : 3;
+  const impactCap = priceImpactPct !== null && priceImpactPct > 1 ? 0.5 : priceImpactPct !== null && priceImpactPct > 0.3 ? 1 : 3;
+  const riskCap = riskScore >= 80 ? 0.5 : riskScore >= 60 ? 1 : riskScore >= 40 ? 2 : 4;
+  const cap = Math.min(liquidityCap, impactCap, riskCap);
+  return {
+    conservative: `${formatPercentRange(Math.max(0.1, cap * 0.25), Math.max(0.25, cap * 0.5))} illustrative exposure scenario based on riskScore=${riskScore}`,
+    balanced: `${formatPercentRange(Math.max(0.25, cap * 0.5), Math.max(0.5, cap))} illustrative exposure scenario based on observed liquidity/route risk`,
+    aggressive: `${formatPercentRange(Math.max(0.5, cap), Math.max(0.75, cap * 1.5))} illustrative exposure scenario; capped by live evidence quality`,
+    disclaimer: "Illustrative portfolio exposure scenarios only; not financial advice."
+  };
+}
+
+function buildMonitoringTriggers(params: {
+  liquidityUsd: number | null;
+  volume24h: number | null;
+  maxPriceChange: number | null;
+  jupiterStatus: SourceStatus;
+  sentimentConfidence: SentimentEvidence["confidence"];
+  priceImpactPct: number | null;
+}): RiskModel["monitoringTriggers"] {
+  const liquidityDropPct = params.liquidityUsd === null ? null : params.liquidityUsd < 250_000 ? 10 : params.liquidityUsd < 1_000_000 ? 15 : 20;
+  const volumeChangePct = params.maxPriceChange !== null && params.maxPriceChange >= 15 ? 35 : params.volume24h !== null && params.volume24h < 100_000 ? 20 : 25;
+  const liquidityFloor =
+    params.liquidityUsd !== null && liquidityDropPct !== null
+      ? Number((params.liquidityUsd * (1 - liquidityDropPct / 100)).toFixed(2))
+      : null;
+  const volumeLowerBound =
+    params.volume24h !== null ? Number((params.volume24h * (1 - volumeChangePct / 100)).toFixed(2)) : null;
+  const volumeUpperBound =
+    params.volume24h !== null ? Number((params.volume24h * (1 + volumeChangePct / 100)).toFixed(2)) : null;
+
+  return [
+    {
+      title: "Liquidity Floor Trigger",
+      trigger:
+        liquidityFloor === null
+          ? "liquidity data becomes available for threshold comparison"
+          : `observed liquidity falls below ${formatUsdCompact(liquidityFloor)} from current ${formatUsdCompact(params.liquidityUsd!)} baseline`,
+      severityIfTriggered: params.liquidityUsd !== null && params.liquidityUsd < 250_000 ? "high" : "medium",
+      evidence:
+        params.liquidityUsd !== null
+          ? `DexScreener liquidityUsd=${params.liquidityUsd}; dynamicDrawdownPct=${liquidityDropPct}; liquidityFloor=${liquidityFloor}`
+          : "insufficient evidence"
+    },
+    {
+      title: "Volume Regime Shift Trigger",
+      trigger:
+        volumeLowerBound === null || volumeUpperBound === null
+          ? "24h volume data becomes available for threshold comparison"
+          : `24h volume moves outside ${formatUsdCompact(volumeLowerBound)}-${formatUsdCompact(volumeUpperBound)} range from current ${formatUsdCompact(params.volume24h!)} baseline`,
+      severityIfTriggered: params.maxPriceChange !== null && params.maxPriceChange >= 15 ? "high" : "medium",
+      evidence:
+        params.volume24h !== null
+          ? `DexScreener volume.h24=${params.volume24h}; dynamicChangePct=${volumeChangePct}; lowerBound=${volumeLowerBound}; upperBound=${volumeUpperBound}`
+          : "insufficient evidence"
+    },
+    {
+      title: "Route Quality Alert",
+      trigger:
+        params.priceImpactPct === null
+          ? "Jupiter route becomes unavailable or returns price impact evidence"
+          : `Jupiter route becomes unavailable or priceImpactPct rises above ${Math.max(1, Number((params.priceImpactPct * 2).toFixed(2)))}%`,
+      severityIfTriggered: params.jupiterStatus === "available" ? "medium" : "high",
+      evidence: `Jupiter status=${params.jupiterStatus}; priceImpactPct=${params.priceImpactPct ?? "insufficient evidence"}`
+    },
+    {
+      title: "Sentiment Coverage Alert",
+      trigger: params.sentimentConfidence === "none" ? "sentiment source remains unavailable" : "sentiment confidence drops below current observed level",
+      severityIfTriggered: params.sentimentConfidence === "none" ? "medium" : "low",
+      evidence: params.sentimentConfidence === "none" ? "insufficient evidence" : `sentimentConfidence=${params.sentimentConfidence}`
+    }
+  ];
+}
+
+function buildActiveAlerts(params: {
+  routeTier: ReturnType<typeof classifyRoute>;
+  liquidityTier: ReturnType<typeof classifyLiquidity>;
+  volatilityTier: ReturnType<typeof classifyVolatility>;
+  sourceTier: ReturnType<typeof classifySourceCoverage>;
+  priceImpactPct: number | null;
+}): RiskModel["activeAlerts"] {
+  const alerts: RiskModel["activeAlerts"] = [];
+  if (params.routeTier.severity === "high") {
+    alerts.push({
+      title: "Route Risk Active",
+      severity: "high",
+      evidence: params.priceImpactPct !== null ? `Jupiter priceImpactPct=${params.priceImpactPct}` : "Jupiter route unavailable or insufficient evidence"
+    });
+  }
+  if (params.liquidityTier.severity === "high") {
+    alerts.push({
+      title: "Thin Liquidity Active",
+      severity: "high",
+      evidence: params.liquidityTier.interpretation
+    });
+  }
+  if (params.volatilityTier.severity === "high") {
+    alerts.push({
+      title: "High Volatility Proxy Active",
+      severity: "high",
+      evidence: params.volatilityTier.interpretation
+    });
+  }
+  if (params.sourceTier.severity === "high") {
+    alerts.push({
+      title: "Source Coverage Gap Active",
+      severity: "medium",
+      evidence: params.sourceTier.interpretation
+    });
+  }
+  return alerts;
+}
+
+function numericField(value: unknown, key: string): number | null {
+  if (!value || typeof value !== "object") return null;
+  const raw = (value as Record<string, unknown>)[key];
+  return parseNullableNumber(raw);
+}
+
+function sumTxnField(value: unknown, key: string): number | null {
+  if (!value || typeof value !== "object") return null;
+  const bucket = (value as Record<string, unknown>)[key];
+  if (!bucket || typeof bucket !== "object") return null;
+  const buys = parseNullableNumber((bucket as Record<string, unknown>).buys) ?? 0;
+  const sells = parseNullableNumber((bucket as Record<string, unknown>).sells) ?? 0;
+  return buys + sells;
+}
+
+function maxAbsNumericObjectValue(value: unknown): number | null {
+  if (!value || typeof value !== "object") return null;
+  const numbers = Object.values(value as Record<string, unknown>)
+    .map(parseNullableNumber)
+    .filter((item): item is number => item !== null)
+    .map(Math.abs);
+  if (numbers.length === 0) return null;
+  return Number(Math.max(...numbers).toFixed(2));
+}
+
+function parseNullableNumber(value: unknown): number | null {
+  const parsed = typeof value === "number" ? value : typeof value === "string" ? Number(value) : Number.NaN;
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function activityRiskPoints(volume24h: number | null, txns24h: number | null): number {
+  if (volume24h === null && txns24h === null) return 8;
+  if ((volume24h !== null && volume24h < 25_000) || (txns24h !== null && txns24h < 50)) return 15;
+  if ((volume24h !== null && volume24h < 100_000) || (txns24h !== null && txns24h < 250)) return 8;
+  return 3;
+}
+
+function activityInterpretation(volume24h: number | null, txns24h: number | null): string {
+  if (volume24h === null && txns24h === null) return "insufficient evidence";
+  return `Observed activity uses volume.h24=${volume24h ?? "insufficient evidence"} and txns.h24=${txns24h ?? "insufficient evidence"}; lower values increase execution and signal-quality risk.`;
+}
+
+function formatUsdCompact(value: number): string {
+  return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", notation: "compact", maximumFractionDigits: 2 }).format(value);
+}
+
+function formatPercentRange(low: number, high: number): string {
+  return `${Number(low.toFixed(2))}-${Number(high.toFixed(2))}%`;
 }

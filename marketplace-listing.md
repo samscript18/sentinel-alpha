@@ -30,6 +30,8 @@ The standalone runner also supports `preflight-only` mode, which lets users test
 
 The runtime does not inject prewritten market narratives. Reports are based on source data returned for the submitted token mint.
 
+The project now includes a responsive Next.js dashboard so buyers can evaluate the workflow visually across desktop, tablet, and mobile: token input, token identity, source status, agent timeline, evidence dashboard, recommendation panel, trace viewer, and artifact downloads.
+
 ## Target Users
 
 - DeFi traders who want faster research triage
@@ -57,13 +59,23 @@ Sentinel Alpha is useful before a human opens a position, publishes research, mo
 - Birdeye: optional token overview when `BIRDEYE_API_KEY` is configured.
 - CoinDesk RSS and CoinTelegraph RSS: recent news evidence.
 - CryptoPanic, GNews, NewsAPI: optional API-key news layers.
-- Reddit and LunarCrush: optional social evidence layers.
+- Reddit OAuth search and LunarCrush: optional social evidence layers.
 
 Missing keys or failed APIs are reported explicitly. Sentinel Alpha does not fake unavailable market data.
 
 ## Traceability
 
 Every run can produce JSON, Markdown, agent-trace, decision-chain, and evidence-report artifacts containing the live source packet, source status rows, data-completeness score, pre-agent confidence category, agent timeline, risk model, active alerts, monitoring triggers, and final decision-support output.
+
+## Dashboard Experience
+
+- Run `npm run dev`.
+- Open the local URL printed by Next.js.
+- Paste a Solana token mint or use a quick token shortcut.
+- Click `Run Analysis`.
+- Review source status, evidence, risk, recommendation, traces, and downloadable artifacts.
+
+Dashboard analysis runs the full demo workflow through `/api/analyze`, so `SWARMS_API_KEY` must be configured. CLI preflight mode remains available for source checks without a Swarms call.
 
 ## Frenzy Mode / Tokenization Angle
 

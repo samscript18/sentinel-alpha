@@ -16,8 +16,18 @@ const requiredFiles = [
   "scripts/lib/env.ts",
   "scripts/lib/source-clients.ts",
   "scripts/lib/report.ts",
+  "scripts/lib/workflow.ts",
+  "app/page.tsx",
+  "app/layout.tsx",
+  "app/api/analyze/route.ts",
+  "components/analysis-console.tsx",
+  "components/query-provider.tsx",
+  "lib/analyze-client.ts",
   ".env.example",
   ".gitignore",
+  "tailwind.config.ts",
+  "postcss.config.mjs",
+  "next.config.mjs",
   "tsconfig.json"
 ];
 
@@ -44,6 +54,11 @@ const submission = await readFile("SUBMISSION.md", "utf8");
 const listing = await readFile("marketplace-listing.md", "utf8");
 const systemPrompt = await readFile("prompts/system.md", "utf8");
 const runner = await readFile("scripts/run-swarm.ts", "utf8");
+const workflow = await readFile("scripts/lib/workflow.ts", "utf8");
+const sourceClients = await readFile("scripts/lib/source-clients.ts", "utf8");
+const apiRoute = await readFile("app/api/analyze/route.ts", "utf8");
+const analysisConsole = await readFile("components/analysis-console.tsx", "utf8");
+const analyzeClient = await readFile("lib/analyze-client.ts", "utf8");
 const envExample = await readFile(".env.example", "utf8");
 const gitignore = await readFile(".gitignore", "utf8");
 const packageText = await readFile("package.json", "utf8");
@@ -56,6 +71,10 @@ for (const [label, content] of [
   ["marketplace-listing.md", listing],
   ["prompts/system.md", systemPrompt],
   ["scripts/run-swarm.ts", runner],
+  ["scripts/lib/workflow.ts", workflow],
+  ["scripts/lib/source-clients.ts", sourceClients],
+  ["app/api/analyze/route.ts", apiRoute],
+  ["components/analysis-console.tsx", analysisConsole],
   ["swarm.payload.json", JSON.stringify(payload)]
 ]) {
   for (const term of bannedTerms) {
@@ -80,6 +99,7 @@ for (const [label, content] of [
   ["marketplace-listing.md", listing],
   ["prompts/system.md", systemPrompt],
   ["scripts/run-swarm.ts", runner],
+  ["scripts/lib/workflow.ts", workflow],
   ["package.json", packageText],
   ["swarm.payload.json", JSON.stringify(payload)]
 ]) {
@@ -161,6 +181,8 @@ for (const key of [
   "CRYPTOPANIC_API_KEY=",
   "GNEWS_API_KEY=",
   "NEWS_API_KEY=",
+  "REDDIT_CLIENT_ID=",
+  "REDDIT_CLIENT_SECRET=",
   "LUNARCRUSH_API_KEY="
 ]) {
   if (!envExample.includes(key)) {
@@ -203,6 +225,32 @@ for (const phrase of [
 
 if (!String(packageJson.scripts?.demo ?? "").includes("scripts/run-swarm.ts")) {
   throw new Error("package.json demo script must run scripts/run-swarm.ts");
+}
+
+for (const dependency of ["next", "react", "react-dom", "axios", "@tanstack/react-query"]) {
+  if (!packageJson.dependencies?.[dependency]) {
+    throw new Error(`package.json missing dashboard dependency: ${dependency}`);
+  }
+}
+
+if (!String(packageJson.scripts?.dev ?? "").includes("next dev")) {
+  throw new Error("package.json dev script must run next dev");
+}
+
+if (!sourceClients.includes("axios.request")) {
+  throw new Error("source-clients.ts should use axios for external source integrations.");
+}
+
+if (!analysisConsole.includes("useMutation")) {
+  throw new Error("dashboard should use TanStack Query for analysis calls.");
+}
+
+if (!analyzeClient.includes("axios.post")) {
+  throw new Error("dashboard client should use axios for the API bridge.");
+}
+
+if (!apiRoute.includes("runSentinelAnalysis")) {
+  throw new Error("/api/analyze must reuse the shared Sentinel workflow.");
 }
 
 if (String(packageJson.scripts?.demo ?? "").includes("--context")) {
