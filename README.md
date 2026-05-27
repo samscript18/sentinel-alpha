@@ -225,6 +225,8 @@ The API route is:
 POST /api/analyze
 ```
 
+Opening `GET /api/analyze` returns a small health/usage response. Dashboard analysis uses `POST`.
+
 Request:
 
 ```json
@@ -235,6 +237,8 @@ Request:
 ```
 
 The dashboard sends `runSwarms: true`, so `SWARMS_API_KEY` is required for interactive dashboard analysis. The route reuses `scripts/lib/workflow.ts`, which reuses the same source clients as the CLI.
+
+On Vercel, the API does not write run artifacts to the project filesystem because serverless functions cannot rely on persistent writable storage. The dashboard still provides downloadable JSON, Markdown, and evidence reports from the response payload. Local CLI runs still write files under `artifacts/runs/`.
 
 ## Artifacts
 

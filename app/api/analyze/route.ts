@@ -5,6 +5,18 @@ import { runSentinelAnalysis } from "../../../scripts/lib/workflow.ts";
 export const runtime = "nodejs";
 export const maxDuration = 200;
 
+export async function GET() {
+  return NextResponse.json({
+    ok: true,
+    service: "Sentinel Alpha analyze API",
+    method: "POST",
+    requiredBody: {
+      tokenAddress: "Solana token mint",
+      runSwarms: true
+    }
+  });
+}
+
 export async function POST(request: Request) {
   await loadDotEnv();
 
@@ -34,8 +46,8 @@ export async function POST(request: Request) {
     const result = await runSentinelAnalysis({
       tokenAddress,
       mode: shouldRunSwarms ? "swarms" : "preflight",
-      writeArtifacts: true,
-      outputDir: "artifacts/runs",
+      writeArtifacts: !process.env.VERCEL,
+      outputDir: process.env.VERCEL ? "/tmp/sentinel-alpha-runs" : "artifacts/runs",
       swarmsApiKey: process.env.SWARMS_API_KEY
     });
 
@@ -45,6 +57,14 @@ export async function POST(request: Request) {
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    return NextResponse.json({ error: message || "Analysis failed." }, { status: 500 });
+    console.error("Sentinel Alpha analyze API failed:", error);
+    return NextResponse.json(
+      {
+        error: message || "Analysis failed.",
+        hint:
+          "Check Vercel environment variables, serverless timeout limits, and upstream source/API availability. Dashboard runs require SWARMS_API_KEY."
+      },
+      { status: 500 }
+    );
   }
 }
